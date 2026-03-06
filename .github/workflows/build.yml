@@ -4,6 +4,11 @@ on:
     branches:
       - '**'
   pull_request:
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: 'LLVM git commit or ref to build'
+        type: string
   schedule:
     - cron: '0 0 * * *'
 
@@ -25,6 +30,7 @@ jobs:
       LLVM_VERSION: ${{steps.get-versions.outputs.LLVM_VERSION}}
       MINGW_W64_VERSION: ${{steps.get-versions.outputs.MINGW_W64_VERSION}}
       PYTHON_VERSION_MINGW: ${{steps.get-versions.outputs.PYTHON_VERSION_MINGW}}
+      IS_RELEASE: ${{steps.get-versions.outputs.IS_RELEASE}}
       TAG: ${{steps.get-tag.outputs.TAG}}
       COMMIT_DATE_UNIX: ${{steps.get-tag.outputs.COMMIT_DATE_UNIX}}
       BUILD_DATE: ${{steps.get-tag.outputs.BUILD_DATE}}
@@ -42,19 +48,30 @@ jobs:
               TAG=$(TZ=UTC date +%Y%m%d)
           fi
           echo TAG=$TAG >> $GITHUB_OUTPUT
-          echo COMMIT_DATE_UNIX=$(git log -1 --pretty=%ct $GITHUB_SHA) >> $GITHUB_OUTPUT
+          echo COMMIT_DATE_UNIX=$(git log -1 --pretty=%ct HEAD) >> $GITHUB_OUTPUT
           BUILD_DATE=$(date -u '+%FT%TZ')
           echo BUILD_DATE=${BUILD_DATE} >> $GITHUB_OUTPUT
           echo BUILD_DATE_UNIX=$(date -d "${BUILD_DATE}" +%s) >> $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT >> parameters.txt
-      - name: Check latest version
-        if: github.event_name == 'schedule'
+      - name: Resolve versions
         id: get-versions
         run: |
-          echo LLVM_VERSION=$(git ls-remote https://github.com/llvm/llvm-project.git | grep 'refs/heads/main$' | awk '{print $1}') >> $GITHUB_OUTPUT
-          echo MINGW_W64_VERSION=$(git ls-remote https://github.com/mingw-w64/mingw-w64.git | grep 'refs/heads/master$' | awk '{print $1}') >> $GITHUB_OUTPUT
-          echo PYTHON_VERSION_MINGW=$(git ls-remote https://github.com/msys2-contrib/cpython-mingw.git | grep 'refs/heads/mingw-v3.13.11$' | awk '{print $1}') >> $GITHUB_OUTPUT
+          untrusted_versions=false
+          if [ "${{github.event_name}}" = "schedule" ]; then
+              untrusted_versions=true
+              echo LLVM_VERSION=$(git ls-remote https://github.com/llvm/llvm-project.git | grep 'refs/heads/main$' | awk '{print $1}') >> $GITHUB_OUTPUT
+          elif [ "${{github.event_name}}" = "workflow_dispatch" ] && [ -n "${{inputs.llvm_version}}" ]; then
+              untrusted_versions=true
+              echo LLVM_VERSION="${{inputs.llvm_version}}" >> $GITHUB_OUTPUT
+          fi
+          if $untrusted_versions; then
+              echo IS_RELEASE=false >> $GITHUB_OUTPUT
+              echo MINGW_W64_VERSION=$(git ls-remote https://github.com/mingw-w64/mingw-w64.git | grep 'refs/heads/master$' | awk '{print $1}') >> $GITHUB_OUTPUT
+              echo PYTHON_VERSION_MINGW=$(git ls-remote https://github.com/msys2-contrib/cpython-mingw.git | grep 'refs/heads/mingw-v3.13.11$' | awk '{print $1}') >> $GITHUB_OUTPUT
+          else
+              echo IS_RELEASE=true >> $GITHUB_OUTPUT
+          fi
           cat $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT >> parameters.txt
       - uses: actions/upload-artifact@v6
@@ -223,13 +240,14 @@ jobs:
 
   # Build a cross compiler for Linux, targeting Windows, with assertions enabled.
   #
-  # The scheduled builds are made with the latest git version of llvm-project
-  # and mingw-w64. When using random git snapshot builds of llvm, there's
+  # Builds that use manually selected or latest upstream versions of
+  # llvm-project and mingw-w64 are less trusted than the pinned release build.
+  # When using such random git snapshot builds of llvm, there's
   # always a risk for bugs - thus build such versions with assertions enabled,
   # to better catch such bugs early. This makes the first-stage toolchain built
-  # here in scheduled builds somewhat slower.
+  # here for non-release builds somewhat slower.
   linux-asserts:
-    if: github.event_name == 'schedule'
+    if: needs.prepare.outputs.IS_RELEASE != 'true'
     needs: [prepare]
     runs-on: ubuntu-latest
     steps:
@@ -551,8 +569,8 @@ jobs:
   # Run the OpenMP tests with the cross-built toolchains from above.
   # This also forces testing the bundled python executables.
   test-openmp:
-    # Only running these tests in scheduled builds.
-    if: github.event_name == 'schedule'
+    # Only running these tests for non-release builds.
+    if: needs.prepare.outputs.IS_RELEASE != 'true'
     needs: [linux-cross-windows, prepare]
     strategy:
       fail-fast: false
@@ -615,8 +633,8 @@ jobs:
   # Run the compiler-rt tests with the cross-built toolchains from above. This
   # also forces testing the bundled python executables.
   test-compiler-rt:
-    # Only running these tests in scheduled builds.
-    if: github.event_name == 'schedule'
+    # Only running these tests for non-release builds.
+    if: needs.prepare.outputs.IS_RELEASE != 'true'
     needs: [linux-cross-windows, prepare]
     strategy:
       fail-fast: false
@@ -689,12 +707,12 @@ jobs:
           ninja check-compiler-rt
 
   # Test cross-building ffmpeg for all 4 targeted architectures from linux.
-  # This is done only on scheduled builds, with a toolchain with assertions
+  # This is done only for non-release builds, with a toolchain with assertions
   # enabled, to catch code generation bugs that might trigger asserts, to
   # find such regressions early.
   linux-test-cross-build-ffmpeg:
-    if: github.event_name == 'schedule'
-    needs: [linux-asserts]
+    if: needs.prepare.outputs.IS_RELEASE != 'true'
+    needs: [linux-asserts, prepare]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -736,10 +754,10 @@ jobs:
   # Test building ffmpeg for natively on x86_64 Windows and run its tests,
   # to find cases of compiler bugs don't show up as failed asserts in the
   # compiler itself, but that only show up at runtime. This is only done
-  # for scheduled builds.
+  # for non-release builds.
   test-ffmpeg:
-    if: github.event_name == 'schedule'
-    needs: [linux-cross-windows]
+    if: needs.prepare.outputs.IS_RELEASE != 'true'
+    needs: [linux-cross-windows, prepare]
     runs-on: windows-latest
     defaults:
       run:
