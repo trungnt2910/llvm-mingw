@@ -4,6 +4,11 @@ on:
     branches:
       - '**'
   pull_request:
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: 'LLVM git commit or ref to build'
+        type: string
   schedule:
     - cron: '0 0 * * *'
 
@@ -42,17 +47,21 @@ jobs:
               TAG=$(TZ=UTC date +%Y%m%d)
           fi
           echo TAG=$TAG >> $GITHUB_OUTPUT
-          echo COMMIT_DATE_UNIX=$(git log -1 --pretty=%ct $GITHUB_SHA) >> $GITHUB_OUTPUT
+          echo COMMIT_DATE_UNIX=$(git log -1 --pretty=%ct HEAD) >> $GITHUB_OUTPUT
           BUILD_DATE=$(date -u '+%FT%TZ')
           echo BUILD_DATE=${BUILD_DATE} >> $GITHUB_OUTPUT
           echo BUILD_DATE_UNIX=$(date -d "${BUILD_DATE}" +%s) >> $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT >> parameters.txt
-      - name: Check latest version
-        if: github.event_name == 'schedule'
+      - name: Resolve versions
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.llvm_version != '')
         id: get-versions
         run: |
-          echo LLVM_VERSION=$(git ls-remote https://github.com/llvm/llvm-project.git | grep 'refs/heads/main$' | awk '{print $1}') >> $GITHUB_OUTPUT
+          if [ "${{github.event_name}}" = "schedule" ]; then
+              echo LLVM_VERSION=$(git ls-remote https://github.com/llvm/llvm-project.git | grep 'refs/heads/main$' | awk '{print $1}') >> $GITHUB_OUTPUT
+          else
+              echo LLVM_VERSION="${{inputs.llvm_version}}" >> $GITHUB_OUTPUT
+          fi
           echo MINGW_W64_VERSION=$(git ls-remote https://github.com/mingw-w64/mingw-w64.git | grep 'refs/heads/master$' | awk '{print $1}') >> $GITHUB_OUTPUT
           echo PYTHON_VERSION_MINGW=$(git ls-remote https://github.com/msys2-contrib/cpython-mingw.git | grep 'refs/heads/mingw-v3.13.11$' | awk '{print $1}') >> $GITHUB_OUTPUT
           cat $GITHUB_OUTPUT

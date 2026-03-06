@@ -6,6 +6,15 @@ on:
         description: 'Ref to extract from'
         type: string
         default: 'master'
+      pipeline_type:
+        description: 'Pipeline type'
+        required: true
+        default: 'push'
+        type: choice
+        options:
+        - push
+        - schedule
+        - workflow_dispatch
       login:
         description: 'Log in to Docker Hub'
         type: boolean
@@ -27,7 +36,7 @@ jobs:
           workflow: build.yml
           workflow_conclusion: success
           ref: ${{inputs.ref}}
-          event: push
+          event: ${{inputs.pipeline_type}}
           name: parameters
       - name: Get build parameters
         id: get-parameters
@@ -74,7 +83,7 @@ jobs:
           workflow: build.yml
           workflow_conclusion: success
           ref: ${{inputs.ref}}
-          event: push
+          event: ${{inputs.pipeline_type}}
           name: linux-ucrt-.*
           name_is_regexp: true
           path: toolchain
